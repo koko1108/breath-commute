@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>白眼通勤</title>
+<meta name="description" content="騎樓小遊戲：等吸菸者冒煙再用白眼雷射瞪熄，肺活量扣光才結束。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Huninn&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="stage">
+  <canvas id="cv" aria-label="白眼通勤遊戲畫面"></canvas>
+
+  <div id="hud" hidden>
+    <div class="lungs">
+      <span class="lbl">肺活量</span>
+      <div class="cells" id="cells"></div>
+    </div>
+    <div class="right">
+      <span id="clock">0:00</span>
+      <span class="score"><b id="score">0</b> 分</span>
+    </div>
+    <button id="mute" type="button" aria-label="切換音效">音效 開</button>
+    <div class="route">
+      <span>熄 <b id="outCount">0</b> 根</span>
+      <div class="track"><i id="progFill"></i><b id="progDot"></b></div>
+      <span id="quotaLbl">下一個稱號</span>
+    </div>
+  </div>
+
+  <div id="hint" hidden>等他冒煙再按住他的臉＝瞪他</div>
+
+  <div class="overlay" id="titleScreen">
+    <div class="ticket">
+      <div class="t-top">
+        <span>騎樓通勤須知</span>
+        <span>上班途中</span>
+      </div>
+      <div class="t-title">
+        <h1 class="logo">白眼<span>通勤</span></h1>
+        <span class="stamp small">白眼是雷射</span>
+      </div>
+      <p class="t-lead">現實裡瞪了沒用，這裡可以。肺活量扣光就結束，熄越多根，稱號越威。</p>
+      <dl class="t-rules">
+        <div><dt>按住臉</dt><dd>瞪吸菸者。他冒煙時才瞪得熄。</dd></div>
+        <div><dt>按住空地</dt><dd>往前走。</dd></div>
+        <div><dt>別瞪錯</dt><dd>喝珍奶、含棒棒糖的不是菸。</dd></div>
+      </dl>
+      <button class="btn" id="startBtn" type="button" style="justify-content:center">出門上班</button>
+      <p class="t-best" id="bestTitle"></p>
+      <p class="t-best">電腦：按住滑鼠操作，或用 → 前進、空白鍵瞪最近的人。</p>
+    </div>
+  </div>
+
+  <div class="overlay" id="endScreen" hidden>
+    <div class="ticket">
+      <div class="t-top">
+        <span>白眼通勤・今日紀錄</span>
+        <span id="endBadge">肺活量歸零</span>
+      </div>
+      <div class="t-title">
+        <span class="stamp" id="endTitle">騎樓白眼王</span>
+        <div class="stars" id="endStars"></div>
+      </div>
+      <div class="t-big"><b id="endOut">0</b><span>根菸被你瞪熄</span></div>
+      <dl class="t-rows">
+        <div><dt>撐了</dt><dd id="endTime">0:00</dd></div>
+        <div><dt>分數</dt><dd id="endScore">0</dd></div>
+        <div><dt>對決勝場</dt><dd id="endDuel">0</dd></div>
+        <div><dt>瞪錯人</dt><dd id="endMiss">0 次</dd></div>
+      </dl>
+      <p class="t-note" id="endNote"></p>
+      <p class="t-best" id="endBest"></p>
+      <div class="row">
+        <button class="btn" id="againBtn" type="button">再通勤一次</button>
+        <button class="btn ghost" id="menuBtn" type="button">回標題</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="script.js"></script>
+</body>
+</html>
