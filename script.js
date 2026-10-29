@@ -10,6 +10,7 @@ const WALK_SPEED = 150;
 const GLARE_RANGE = 300;
 const HEAD_HIT = 38;
 const FLOOR_Y = 330;
+const COUGH_GAP = 1.5; // seconds between coughs while standing in smoke
 const CLEAN_TIME = 5;
 const START_X = 200;
 
@@ -170,7 +171,7 @@ const SFX = (() => {
     mistake() { tone(140, 0.32, 'square', 0.18); tone(147, 0.32, 'square', 0.12); },
     cough() {
       const now = performance.now();
-      if (now - lastCough < 1400) return;
+      if (now - lastCough < 800) return;
       lastCough = now;
       if (!muted && coughBuf && ac) {
         const s = ac.createBufferSource(), g = ac.createGain();
@@ -182,7 +183,23 @@ const SFX = (() => {
       const bark = d => { noise(0.17, 0.6, 1300, 'bandpass', 0.8, d, 450); tone(160, 0.13, 'sawtooth', 0.08, 90, d); };
       bark(0); bark(0.22);
     },
-    clean() { [784, 988, 1175, 1568].forEach((f, i) => tone(f, 0.22, 'triangle', 0.15, null, i * 0.06)); },
+    // 肺活量 MAX: charge-up sweep, brass fanfare, kick + crash
+    maxStart() {
+      tone(180, 0.45, 'sawtooth', 0.12, 900);
+      [523, 659, 784].forEach((f, i) => { tone(f, 0.09, 'square', 0.1, null, 0.45 + i * 0.1); tone(f / 2, 0.09, 'sawtooth', 0.06, null, 0.45 + i * 0.1); });
+      tone(1047, 0.55, 'sawtooth', 0.11, null, 0.78); tone(784, 0.55, 'square', 0.08, null, 0.78); tone(523, 0.55, 'square', 0.07, null, 0.78);
+      tone(150, 0.25, 'sine', 0.5, 40, 0.45); tone(150, 0.3, 'sine', 0.55, 40, 0.78);
+      noise(0.7, 0.22, 6000, 'highpass', 0.7, 0.78);
+    },
+    // driving battle pulse while MAX lasts
+    maxBeat(i) {
+      const bass = [110, 110, 165, 147][Math.floor(i / 2) % 4];
+      tone(bass, 0.13, 'sawtooth', 0.07); tone(bass * 2, 0.08, 'square', 0.03);
+      if (i % 2 === 0) tone(130, 0.12, 'sine', 0.3, 45);
+      noise(0.04, 0.08, 8000, 'highpass', 1);
+    },
+    maxEnd() { tone(700, 0.6, 'sawtooth', 0.09, 120); noise(0.4, 0.1, 1500, 'lowpass', 1, 0, 200); },
+    boom() { tone(90, 0.35, 'sine', 0.45, 30); noise(0.25, 0.3, 900, 'lowpass', 0.7); },
     tick() { tone(1800, 0.03, 'square', 0.06); },
     clear() { [523, 659, 784, 659, 784, 1047].forEach((f, i) => tone(f, 0.18, 'square', 0.12, null, i * 0.11)); },
     fail() { [392, 370, 349, 262].forEach((f, i) => tone(f, i === 3 ? 0.6 : 0.25, 'sawtooth', 0.1, null, i * 0.28)); }
@@ -210,14 +227,16 @@ const hash = (i, j) => (((i * 73856093) ^ (j * 19349663)) >>> 0) % 100;
 // ---------- state ----------
 let state = 'title';
 let P, npcs, parts, floats, sparks, stamps, cigs, duel, elapsed, shake, stats, lock, clean, freeze, flash, lastTick, spawnT, lastSpawnX, nextGang, gangCount, gangTired = 1;
+let maxBanner = 0, rings = [], beatT = 0, beatN = 0; // 肺活量 MAX effects
 const ptr = { down: false, x: 0, y: 0, glareMode: false };
 const keys = { right: false };
 
 function reset() {
-  P = { x: START_X, phase: 0, moving: false, cough: 0, coughTxt: 0, lungs: 5, glaring: null, push: 0 };
+  P = { x: START_X, phase: 0, moving: false, cough: 0, coughT: 0, coughCd: 0, inSmoke: false, lungs: 5, glaring: null, push: 0 };
   npcs = []; parts = []; floats = []; sparks = []; stamps = []; cigs = [];
   duel = null; lock = null; clean = 0; freeze = 0; flash = 0; lastTick = -1;
   elapsed = 0; shake = 0; spawnT = 1.2; nextGang = GANG_FIRST; gangCount = 0;
+  maxBanner = 0; rings = []; beatT = 0; beatN = 0;
   stats = { out: 0, score: 0, duels: 0, miss: 0, scared: 0 };
   camX = START_X - viewW * 0.3;
   // opening line-up: one lights up quickly, one is still on his phone (bait for an early glare)
@@ -321,6 +340,7 @@ function headAt(wx, wy) {
 const inDuel = n => duel && (duel.target === n || duel.rivals.includes(n));
 
 function zap(n) {
+  if (clean > 0) { rings.push({ x: n.x, y: headY(n), t: 0 }); SFX.boom(); }
   n.state = 'zapped'; n.zapT = 0; n.hasCig = false; n.meter = 1; n.fear = 1;
   freeze = 0.11; flash = 0.6; shake = Math.max(shake, 0.4);
   const hy = headY(n);
@@ -331,15 +351,16 @@ function zap(n) {
   stats.out++;
   stats.score += n.type === 'vet' ? 3000 : 1000;
   // each cigarette refills a bit less as the air gets worse
-  P.lungs = Math.min(9, P.lungs + (n.type === 'vet' ? 2 : 1) * Math.max(0.25, 1 - diff() * 0.25));
+  // fixed refill: 1 segment per cigarette (2 for a veteran), so 肺活量 MAX stays reachable late in the run
+  P.lungs = Math.min(9, P.lungs + (n.type === 'vet' ? 2 : 1));
   SFX.zap();
   if (P.lungs >= 9 && clean <= 0) startClean();
 }
 function startClean() {
-  clean = CLEAN_TIME;
-  float(P.x + 40, FLOOR_Y - 175, '清肺時刻！', C.sign, 30);
-  flash = Math.max(flash, 0.4);
-  SFX.clean();
+  clean = CLEAN_TIME; stats.max = (stats.max || 0) + 1;
+  maxBanner = 1.5; beatT = 0.8; beatN = 0;
+  flash = Math.max(flash, 0.6); shake = Math.max(shake, 0.5);
+  SFX.maxStart();
 }
 // glared at someone who isn't smoking yet: he glares straight back and it costs you
 function glaredBack(n) {
@@ -445,19 +466,27 @@ function updatePlayer(dt) {
   else if (P.glaring) SFX.humOn(0.1, false);
   else SFX.humOff();
 
-  // the arcade air keeps getting worse: lungs slowly drain, so you have to keep putting cigarettes out
-  if (clean <= 0 && !duel) P.lungs = Math.max(0, P.lungs - Math.min(0.8, 0.03 + 0.08 * diff()) * dt);
   const dens = densityAt(P.x + 14, FLOOR_Y - 84);
+  // "in smoke" with hysteresis so the faint edge of a cloud doesn't flicker it on and off
+  P.inSmoke = clean <= 0 && (P.inSmoke ? dens > 0.1 : dens > 0.2);
   if (clean > 0) {
     clean -= dt;
     for (const p of parts) if (Math.abs(p.x - P.x) < 240) p.a0 *= Math.pow(0.02, dt);
-    if (clean <= 0) P.lungs = Math.min(P.lungs, 3);
-  } else if (dens > 0.05) {
-    P.lungs = Math.max(0, P.lungs - dens * 0.55 * dt);
-    P.cough = 0.4;
-    P.coughTxt -= dt;
-    if (P.coughTxt <= 0) { P.coughTxt = 0.8; float(P.x + 18, FLOOR_Y - 122, pick(['咳！', '咳咳']), '#d8dccb'); SFX.cough(); }
+    if (clean <= 0) { P.lungs = Math.min(P.lungs, 5); SFX.maxEnd(); float(P.x, FLOOR_Y - 150, '能量耗盡……', '#cfe9ff', 18); }
   }
+  if (P.inSmoke) {
+    P.cough = 0.4;
+    P.coughT -= dt;
+    // one rule players can see: in smoke = cough now, then every COUGH_GAP s; every cough costs lungs
+    if (P.coughT <= 0 && P.coughCd <= 0) {
+      P.coughT = COUGH_GAP; P.coughCd = 0.8;
+      const hit = Math.min(1.5, (0.35 + 0.5 * dens) * (1 + 0.15 * diff()));
+      P.lungs = Math.max(0, P.lungs - hit);
+      float(P.x + 18, FLOOR_Y - 122, pick(['咳！', '咳咳']), '#d8dccb'); SFX.cough();
+      cellsEl.classList.remove('hit'); void cellsEl.offsetWidth; cellsEl.classList.add('hit');
+    }
+  } else P.coughT = 0;
+  P.coughCd = Math.max(0, P.coughCd - dt);
   P.cough = Math.max(0, P.cough - dt);
 }
 
@@ -568,6 +597,9 @@ function updateFx(dt) {
   }
   cigs = cigs.filter(c => c.life > 0);
   for (const s of stamps) s.t += dt;
+  maxBanner = Math.max(0, maxBanner - dt);
+  for (const r of rings) r.t += dt;
+  rings = rings.filter(r => r.t < 0.5);
   stamps = stamps.filter(s => s.t < 0.9);
   for (const f of floats) { f.life -= dt; f.y -= 26 * dt; }
   floats = floats.filter(f => f.life > 0);
@@ -592,6 +624,7 @@ function step(dt) {
       else if (duel.p <= 0) endDuel(false);
     }
     updatePlayer(dt);
+    if (clean > 0) { beatT -= dt; if (beatT <= 0) { beatT = 0.16; SFX.maxBeat(beatN++); } }
     updateNPCs(dt);
     updateFx(dt);
     // heartbeat tick when you're about to pass out
@@ -911,9 +944,14 @@ function drawPlayer() {
   ctx.save(); ctx.translate(P.x, FLOOR_Y - bob); ctx.scale(heroFace(), 1);
   ctx.lineCap = 'round';
   if (clean > 0) {
-    const g = ctx.createRadialGradient(0, -60, 10, 0, -60, 80);
-    g.addColorStop(0, 'rgba(255,207,63,.55)'); g.addColorStop(1, 'rgba(255,207,63,0)');
-    ctx.fillStyle = g; circ(0, -60, 80);
+    // 肺活量 MAX: shockwave pulsing out under the feet, and a gold glow outline on everything drawn below
+    const t = performance.now() / 1000;
+    for (let k = 0; k < 2; k++) {
+      const ph = reduceMotion ? 0.5 * k + 0.25 : (t * 1.6 + k * 0.5) % 1;
+      ctx.strokeStyle = `rgba(255,214,63,${(1 - ph).toFixed(2)})`; ctx.lineWidth = 3 * (1 - ph) + 1;
+      ctx.beginPath(); ctx.ellipse(0, -1, 14 + ph * 46, 4 + ph * 10, 0, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.shadowColor = 'rgba(255,196,40,.95)'; ctx.shadowBlur = 16 * dpr * scale;
   }
   const sw = Math.sin(P.phase) * (P.moving ? 10 : 0);
   ctx.strokeStyle = '#2f3448'; ctx.lineWidth = 8;
@@ -934,6 +972,12 @@ function drawPlayer() {
     ctx.strokeStyle = '#1b1b22'; ctx.lineWidth = 3.2; line(1, ey - 9, 15, ey - 4);
     ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(ex, ey, 5.5, 3.8, 0, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = clean > 0 ? '#ff9a2f' : C.glare; circ(ex + 2, ey, 2);
+    if (clean > 0) {
+      const fl = reduceMotion ? 0 : Math.sin(performance.now() / 45) * 3;
+      ctx.save(); ctx.translate(ex - 1, ey - 1); ctx.rotate(-0.9);
+      flame(0, 0, 4, 16 + fl, 0, '#ff5a1f'); flame(0, 0, 2.2, 10 + fl * 0.6, 0, '#ffe680');
+      ctx.restore();
+    }
     ctx.strokeStyle = '#7a3b2b'; ctx.lineWidth = 1.8; line(9, hy + 9, 15, hy + 8);
   } else if (P.cough > 0) {
     ctx.strokeStyle = '#1b1b22'; ctx.lineWidth = 2; line(ex - 3, ey - 3, ex + 3, ey + 3); line(ex - 3, ey + 3, ex + 3, ey - 3);
@@ -941,7 +985,47 @@ function drawPlayer() {
     ctx.fillStyle = '#1b1b22'; circ(ex, ey, 2);
     ctx.strokeStyle = '#7a3b2b'; ctx.lineWidth = 1.6; ctx.beginPath(); ctx.arc(11, hy + 6, 3.5, 0.2, Math.PI * 0.8); ctx.stroke();
   }
+  ctx.shadowBlur = 0;
   ctx.restore();
+}
+
+function flame(x, y, w, h, sway, col) {
+  ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(x - w, y);
+  ctx.quadraticCurveTo(x - w, y - h * 0.6, x + sway, y - h);
+  ctx.quadraticCurveTo(x + w, y - h * 0.6, x + w, y); ctx.closePath(); ctx.fill();
+}
+
+// screen-space MAX overlay: manga focus lines toward the hero + the big banner
+function drawMaxOverlay(W, H) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const k = dpr * scale;
+  const cx = (P.x - camX) * k, cy = (FLOOR_Y - 90 + viewH - 400) * k;
+  if (clean > 0) {
+    const fade = Math.min(1, clean / 0.6, (CLEAN_TIME - clean) / 0.25);
+    const R = Math.hypot(W, H), rIn = Math.min(W, H) * 0.33;
+    ctx.fillStyle = `rgba(255,255,255,${(0.6 * fade).toFixed(3)})`;
+    for (let i = 0; i < 64; i++) {
+      const a = (i / 64) * Math.PI * 2 + (reduceMotion ? 0 : rnd(-0.03, 0.03)), da = 0.016 + (i % 3) * 0.009;
+      const r0 = rIn + (reduceMotion ? 0 : rnd(0, rIn * 0.5));
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a - da) * R, cy + Math.sin(a - da) * R);
+      ctx.lineTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0);
+      ctx.lineTo(cx + Math.cos(a + da) * R, cy + Math.sin(a + da) * R);
+      ctx.closePath(); ctx.fill();
+    }
+  }
+  if (maxBanner > 0) {
+    const u = 1.5 - maxBanner;
+    const off = u < 0.2 ? (1 - u / 0.2) * W : u > 1.25 ? -((u - 1.25) / 0.25) * W : 0;
+    const fs = Math.min(W * 0.11, H * 0.13), bh = fs * 1.7, by = H * 0.4;
+    ctx.save(); ctx.translate(W / 2 + off, by); ctx.transform(1, 0, -0.25, 1, 0, 0);
+    ctx.fillStyle = '#d8343f'; ctx.fillRect(-W, -bh / 2, W * 2, bh);
+    ctx.fillStyle = '#ffd23f'; ctx.fillRect(-W, -bh / 2, W * 2, bh * 0.08); ctx.fillRect(-W, bh / 2 - bh * 0.08, W * 2, bh * 0.08);
+    ctx.font = `${Math.round(fs)}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round'; ctx.lineWidth = fs * 0.16; ctx.strokeStyle = '#1f1d2b'; ctx.strokeText('肺活量 MAX！', 0, fs * 0.05);
+    ctx.fillStyle = '#ffe680'; ctx.fillText('肺活量 MAX！', 0, fs * 0.05);
+    ctx.restore();
+  }
 }
 
 function beam(x1, y1, x2, y2, col, glow, w) {
@@ -1035,7 +1119,7 @@ function render() {
   } else if (P.glaring) {
     const n = P.glaring;
     const big = clean > 0;
-    beam(eyeX, eyeY, n.x, headY(n), big ? '#ffd23f' : '#ff5c9a', big ? 'rgba(255,170,40,.4)' : 'rgba(255,63,127,.35)', big ? 13 : 8);
+    beam(eyeX, eyeY, n.x, headY(n), big ? '#ffd23f' : '#ff5c9a', big ? 'rgba(255,150,40,.28)' : 'rgba(255,63,127,.35)', big ? 12 : 8); // slimmer cannon glow so faces stay visible
     impact(n.x, headY(n), big ? '#ff7a00' : '#ff2e6d');
   }
   for (const n of npcs) if (n.backT > 0 && n.state === 'free' && vis(n)) beam(n.x + n.dir * 8, headY(n), eyeX, eyeY, '#ffd23f', 'rgba(255,190,40,.35)', 5);
@@ -1053,7 +1137,9 @@ function render() {
     ctx.fillStyle = 'rgba(31,29,43,.9)'; rr(-82, -15, 164, 30, 15); ctx.fill();
     ctx.strokeStyle = '#ffd23f'; ctx.lineWidth = 2; ctx.stroke();
     ctx.fillStyle = '#ffd23f'; ctx.font = `15px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('◀ 後面有人邊走邊抽！', 0, 1);
+    // draw the arrow as a shape: the ◀ character turns into a blue emoji on iPhone
+    ctx.beginPath(); ctx.moveTo(-73, 1); ctx.lineTo(-65, -5); ctx.lineTo(-65, 7); ctx.closePath(); ctx.fill();
+    ctx.fillText('後面有人邊走邊抽！', 9, 1);
     ctx.restore();
   }
   if (lock && !P.glaring && canGlare(lock)) {
@@ -1088,6 +1174,14 @@ function render() {
     ctx.fillStyle = f.color; ctx.fillText(f.text, f.x, f.y);
   }
   ctx.globalAlpha = 1;
+  for (const r of rings) {
+    const q = r.t / 0.5;
+    ctx.globalAlpha = 1 - q;
+    ctx.strokeStyle = '#fff3a0'; ctx.lineWidth = 7 * (1 - q) + 1; ctx.beginPath(); ctx.arc(r.x, r.y, 10 + q * 150, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = '#ff7a00'; ctx.lineWidth = 4 * (1 - q) + 1; ctx.beginPath(); ctx.arc(r.x, r.y, 4 + q * 100, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  if (clean > 0 || maxBanner > 0) drawMaxOverlay(W, H);
   if (flash > 0) {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = `rgba(255,255,255,${(flash * 0.5).toFixed(3)})`; ctx.fillRect(0, 0, W, H);
@@ -1099,8 +1193,15 @@ const cellsEl = $('#cells');
 for (let i = 0; i < 9; i++) cellsEl.appendChild(document.createElement('i'));
 const cellEls = [...cellsEl.children];
 function hud() {
-  const full = Math.ceil(P.lungs - 0.001);
-  cellEls.forEach((c, i) => c.classList.toggle('on', i < full));
+  // whole segments are solid; the last one fills partially, so a full bar really means 9 (and MAX fires)
+  const whole = Math.floor(P.lungs + 1e-6), frac = P.lungs - whole;
+  const col = clean > 0 ? 'var(--sign)' : P.lungs <= 2 ? 'var(--glare)' : 'var(--lung)';
+  cellEls.forEach((c, i) => {
+    c.classList.toggle('on', i < whole);
+    const part = i === whole && frac > 0.02, pc = (frac * 100).toFixed(0);
+    c.style.background = part ? `linear-gradient(90deg, ${col} ${pc}%, rgba(0,0,0,.45) ${pc}%)` : '';
+    c.style.borderColor = part ? col : '';
+  });
   cellsEl.classList.toggle('low', P.lungs <= 2 && clean <= 0);
   cellsEl.classList.toggle('full', clean > 0);
   const clock = $('#clock');

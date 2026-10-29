@@ -41,6 +41,8 @@ canvas { display: block; width: 100%; height: 100%; }
 .cells.low i.on { background: var(--glare); border-color: var(--glare); animation: blink .35s steps(2) infinite; }
 .cells.full i.on { background: var(--sign); border-color: var(--sign); }
 @keyframes blink { 50% { opacity: .45; } }
+.cells.hit i { animation: hit .35s ease-out; }
+@keyframes hit { 0% { box-shadow: 0 0 0 2px var(--glare); transform: translateY(2px); } 100% { box-shadow: none; transform: none; } }
 .right { text-align: right; font-variant-numeric: tabular-nums; display: flex; flex-direction: column; gap: 2px; }
 #clock { font-size: 26px; line-height: 1; }
 #clock.late { color: var(--glare); }
